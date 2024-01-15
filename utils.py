@@ -67,7 +67,18 @@ def read_instances(files_name : str) -> tuple:
 
 
 
-def solve_base_solution(files_name : str):
+def solve_base_solution(files_name : str, additional_restriction : int = 0):
+    """_summary_
+
+    Args:
+        files_name (str): name of the files containing the instance to solve
+        additional_restriction (int): integer variable containing the type of restriction to apply
+                                        0: base solution
+                                        1: at most 3 consecutive time slots with conflicting exams
+                                        2: if two consecutive slots have conflicting exams, then no conflicts for 3 slots
+                                        3: bonus profit each time no conflicting exams are scheduler for 6 slots
+                                        4: at most 3 conflicting pairs of exams can be scheduled in same time slot
+    """
     ##populate vars from files
     slo, exm, stu, n = read_instances(files_name)
 
@@ -92,11 +103,20 @@ def solve_base_solution(files_name : str):
     x = model.addVars(x_dict, vtype=GRB.BINARY, name="x")
 
     #set objective function
-    model.setObjective(
-        gp.quicksum((2**(5 - abs(t1 - t2)) )* n[e1, e2] * x[e1, t1] * x[e2,t2] / len(S) 
-                    for e1 in E for e2 in range(e1+1, len(E)+1) for t1 in T for t2 in T if abs(t1-t2)<=5 and abs(t1-t2)>=1),
-        GRB.MINIMIZE
-    )
+    if additional_restriction != 4:
+        model.setObjective(
+            gp.quicksum((2**(5 - abs(t1 - t2)) )* n[e1, e2] * x[e1, t1] * x[e2,t2] / len(S) 
+                        for e1 in E for e2 in range(e1+1, len(E)+1) for t1 in T for t2 in T if abs(t1-t2)<=5 and abs(t1-t2)>=1),
+            GRB.MINIMIZE
+        )
+    else:
+        #if I can have conflicting exams in same timeslot, I must remove >=1 condition on (t1-t2) to not get all possible exams scheduled on the same day
+        model.setObjective(
+            gp.quicksum((2**(5 - abs(t1 - t2)) )* n[e1, e2] * x[e1, t1] * x[e2,t2] / len(S) 
+                        for e1 in E for e2 in range(e1+1, len(E)+1) for t1 in T for t2 in T if abs(t1-t2)<=5),
+            GRB.MINIMIZE
+        )
+
 
     #Add constraints
 
@@ -104,16 +124,20 @@ def solve_base_solution(files_name : str):
     for e in E:
         model.addConstr(gp.quicksum(x[e, t] for t in T) == 1, name=f"{e}_scheduled_once")
 
-    #can't have conflicting exams scheduled in same time slot
-    for e1 in E:
-        for e2 in range(e1+1, len(E)+1):
-            if n[e1, e2] > 0:
-                for t in T:
-                    model.addConstr(x[e1, t] * x[e2, t] == 0, name=f"no_conflicting_exams_{e1}_{e2}_{t}")
+    if additional_restriction != 4:
+        #can't have conflicting exams scheduled in same time slot
+        for e1 in E:
+            for e2 in range(e1+1, len(E)+1):
+                if n[e1, e2] > 0:
+                    for t in T:
+                        model.addConstr(x[e1, t] * x[e2, t] == 0, name=f"no_conflicting_exams_{e1}_{e2}_{t}")
+    else:
+        for t in T:
+            model.addConstr(gp.quicksum(x[e1, t] * x[e2, t] for e1 in E for e2 in range(e1+1, len(E)+1) if n[e1, e2]>0) <= 3, name=f"max_3_conflicting_exams_{t}")
 
     #enable solution pool, model won't stop at first optimal solution
     model.setParam(GRB.Param.PoolSearchMode, 2)  
-    model.setParam(GRB.param.TimeLimit, 1200)
+    model.setParam(GRB.param.TimeLimit, 600)
     model.setParam(GRB.param.Presolve, 2)
 
     #Optimize the model
@@ -121,16 +145,16 @@ def solve_base_solution(files_name : str):
 
     #Display results
     if model.SolCount > 0:
-        if check_feasibility(x, n):
+        #if check_feasibility(x, n):
             #save solution found
-            model.write(f"solutions/{files_name}_base.sol")
-            if model.status == GRB.OPTIMAL:
-                print("Found optimal solution")
-            for e, t in x.keys():
-                if x[e, t].x > 0.5:
-                    print(f"Exam {e} is scheduled in time-slot {t}")
-        else:
-            print("Solution not feasible")
+        model.write(f"solutions/{files_name}_base_restriction_{additional_restriction}.sol")
+        if model.status == GRB.OPTIMAL:
+            print("Found optimal solution")
+        for e, t in x.keys():
+            if x[e, t].x > 0.5:
+                print(f"Exam {e} is scheduled in time-slot {t}")
+        #else:
+            #print("Solution not feasible")
     else:
         print("No solution found.")
 
@@ -197,16 +221,16 @@ def solve_first_type_equity_solution(files_name : str):
 
     #Display results
     if model.SolCount > 0:
-        if check_feasibility(x, n):
+        #if check_feasibility(x, n):
             #save solution found
-            model.write(f"solutions/{files_name}_first_type_equity.sol")
-            if model.status == GRB.OPTIMAL:
-                print("Found optimal solution")
-            for e, t in x.keys():
-                if x[e, t].x > 0.5:
-                    print(f"Exam {e} is scheduled in time-slot {t}")
-        else:
-            print("Solution not feasible")
+        model.write(f"solutions/{files_name}_first_type_equity.sol")
+        if model.status == GRB.OPTIMAL:
+            print("Found optimal solution")
+        for e, t in x.keys():
+            if x[e, t].x > 0.5:
+                print(f"Exam {e} is scheduled in time-slot {t}")
+        #else:
+        print("Solution not feasible")
     else:
         print("No solution found.")
     model.dispose()
@@ -278,7 +302,7 @@ def solve_second_type_equity_solution(files_name : str):
     for s in S:
         for t in range(1, len(T)):
             model.addConstr(
-                #z[s, t] can have value 1 at most, otherwise it would against previous constraing(no conflicts in same time slot)
+                #z[s, t] can have value 1 at most, otherwise it would against previous constraint(no conflicts in same time slot)
                 z[s, t] == np.sum(x[e1, t] * x[e2, t+1] for e1 in stu[s] for e2 in stu[s] if n[e1, e2] > 0) 
                 , name=f"back_to_back_{s}_{e1}_{e2}_{t}"
                 )
@@ -288,7 +312,7 @@ def solve_second_type_equity_solution(files_name : str):
         model.addConstr(
             #y[s] is forced by minimization objective function to 0 when the sum is 0, and it is pushed to 1 when when the sum is > 0
             #because it is divided by a number which is greater than the maximum value obtainable by the sum
-            y[s] >= (gp.quicksum(z[s, t] for t in T) / float(len(stu[s])))
+            y[s] >= (gp.quicksum(z[s, t] for t in T) / float(len(T)+1))
             , name=f"{s}_at_least_one_back_to_back"
         )
 
@@ -296,7 +320,7 @@ def solve_second_type_equity_solution(files_name : str):
     #enable solution pool, model won't stop at first optimal solution
     model.setParam(GRB.Param.PoolSearchMode, 2)  
     model.setParam(GRB.param.TimeLimit, 600)
-    # model.setParam(GRB.param.Presolve, 2)
+    #model.setParam(GRB.param.Presolve, 2)
 
     #Optimize the model
     model.optimize()
@@ -308,7 +332,7 @@ def solve_second_type_equity_solution(files_name : str):
     if model.SolCount > 0:
         if check_feasibility(x, n):
             #save solution found
-            model.write(f"solutions/{files_name}_second_type.sol")
+            model.write(f"solutions/{files_name}_presolve_second_type.sol")
             if model.status == GRB.OPTIMAL:
                 print("Found optimal solution")
             for e, t in x.keys():
