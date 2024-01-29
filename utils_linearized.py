@@ -68,7 +68,7 @@ def read_instances(files_name : str) -> tuple:
 
 
 def solve_instance(files_name : str, equity_measure : int = 0, additional_restriction : int = 0):
-    """_summary_
+    """Method used to solve the instance of an ETP problem contained in 3 files with name {files_name}
 
     Args:
         files_name (str): name of the files containing the instance to solve
@@ -88,6 +88,8 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 ####################################   INITIALIZATION   ######################################
 ##############################################################################################
     
+    #force base problem in case of additional restrictions selected
+    if additional_restriction > 0: equity_measure=0
 
     ##populate vars from files
     slo, exm, stu, n = read_instances(files_name)
@@ -98,20 +100,25 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 
     #prepare variables for gurobi
     x_dict = dict()
-    z_dict = dict()
+    y_dict = dict()
 
     #initialize variable x[e,t]
     for e in E:
         for t in T:
             x_dict[e, t] = 0
     
-    #linearization: new binary decision var z[e1,e2,t1, t2] = 1 if x[e1, t1]=1 and x[e2,t2]=1
+    #linearization: new binary decision var y[e1,e2,t1, t2] = 1 if x[e1, t1]=1 and x[e2,t2]=1
     for e1 in E:
-        for e2 in range(e1+1, len(E)+1):
+        #commented to make it work for equity measure =2 
+        #for e2 in range(e1+1, len(E)+1):
+        for e2 in E:
             for t1 in T:
                 for t2 in T:
-                    if abs(t1-t2) <= 5 and abs(t1-t2)>=1 and n[e1,e2]>0:
-                        z_dict[e1,t1,e2,t2] = 0
+                    #linearize x[e1,t1] * x[e2,t2] using y[e1,t1,e2,t2]
+                    if n[e1,e2]>0:
+                        y_dict[e1,t1,e2,t2] = 0
+
+
 
     # Create Gurobi model
     model = gp.Model("Exam_Timetabling")
@@ -120,7 +127,12 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
     x = model.addVars(x_dict, vtype=GRB.BINARY, name="x")
 
     #linearization
-    z = model.addVars(z_dict, vtype=GRB.BINARY, name="z")
+    y = model.addVars(y_dict, vtype=GRB.BINARY, name="y")
+
+
+    #compute total number of conflicts between exams
+    num_conflicting_exm = np.sum(1 for e1 in E for e2 in range(e1+1, len(E)+1) if n[e1, e2] > 0)
+
 
 ##############################################################################################
 ####################################    OBJ FUNCTION   #######################################
@@ -128,15 +140,47 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 
     match equity_measure:
         case 0:
+            if additional_restriction != 3:
+                model.setObjective(
+                    gp.quicksum((2**(5 - abs(t1-t2)) )* n[e1, e2] *  y[e1,t1,e2,t2] / len(S) 
+                                for e1 in E for e2 in range(e1+1,len(E)+1) for t1 in T for t2 in T if abs(t1-t2)<=5 and n[e1,e2]>0),
+                    GRB.MINIMIZE
+                )
+            else:
+                #introduce bonus variable b[t] =1 if 6 timeslots with no conflicting exams scheduled
+                b_dict = dict()
+                for t in range(1,len(T)-4):
+                    b_dict[t]=0
+                b = model.addVars(b_dict, vtype=GRB.BINARY, name="b")
+
+                model.setObjective(
+                    gp.quicksum((2**(5 - abs(t1-t2)) )* n[e1, e2] *  y[e1,t1,e2,t2] / len(S) 
+                                for e1 in E for e2 in range(e1+1,len(E)+1) for t1 in T for t2 in T if abs(t1-t2)<=5 and n[e1,e2]>0) 
+                                #subtract all the bonus (1 every 6 timeslots withoutconflicting exams, even if overlapping)
+                                - gp.quicksum(b[t] for t in range(1, len(T)-4)),
+                    GRB.MINIMIZE
+                )
+        case 1:
+            #maximize average distance between any two conflicting exams
             model.setObjective(
-                gp.quicksum((2**(5 - abs(t1-t2)) )* n[e1, e2] *  z[e1,t1,e2,t2] / len(S) 
-                            for e1 in E for e2 in range(e1+1,len(E)+1) for t1 in T for t2 in T if abs(t1-t2)<=5 and abs(t1-t2)>=1 and n[e1,e2]>0),
+                gp.quicksum((abs(t1-t2) * y[e1,t1,e2,t2]) / num_conflicting_exm
+                            for e1 in E for e2 in range(e1+1, len(E)+1) for t1 in T for t2 in T if n[e1, e2] > 0),
+                GRB.MAXIMIZE
+            )
+        case 2:
+            #initialize variable z[s]
+            z_dict = dict()
+            for s in S:
+                z_dict[s] = 0
+
+            #binary variable z[s] = 1 if student s has at least 2 conflicting exams scheduled back to back
+            z = model.addVars(z_dict, vtype=GRB.BINARY, name="z")   
+            
+            #minimize number of students with back to back conflicting exams 
+            model.setObjective(
+                gp.quicksum(z[s] for s in S),
                 GRB.MINIMIZE
             )
-        case 1:
-            return
-        case 2:
-            return
 
 ##############################################################################################
 #####################################   CONSTRAINTS   ########################################
@@ -146,45 +190,152 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
     for e in E:
         model.addConstr(gp.quicksum(x[e, t] for t in T) == 1, name=f"{e}_scheduled_once")
 
-    #can't schedule conflicting exams in same time slot
+    #can't schedule conflicting exams in same time slot (valid for every case except for additional restriction 4)
     match additional_restriction:
-        case 0,1,2,3:
+        case 0|1|2|3:
             for e1 in E:
                 for e2 in range(e1+1, len(E)+1):
                     if n[e1, e2] > 0:
                         for t in T:
                             model.addConstr(x[e1,t] + x[e2,t] <= 1)
         case 4:
-            return
+            for t in T:
+                #at most 3 conflicting pairs of exams in same time slot
+                model.addConstr(gp.quicksum(y[e1,t,e2,t] for e1 in E for e2 in range(e1+1, len(E)+1) if n[e1, e2]>0) <= 3, name=f"max_3_conflicting_exams_{t}")
 
-    #link z to x (linearize x[e1,t1] * x[e2,t2])
+
+    #link y to x (linearize x[e1,t1] * x[e2,t2])
     for e1 in E:
-        for e2 in range(e1+1, len(E)+1):
-            for t1 in T:
-                for t2 in T:
-                    if abs(t1-t2)<=5 and abs(t1-t2)>=1 and n[e1, e2] > 0:
-                        model.addConstr(z[e1,t1,e2,t2]>=x[e1,t1] + x[e2,t2] - 1 ,
-                                        name=f"z_{e1}_{t1}_{e2}_{t2}_gt")
-                        model.addConstr(z[e1,t1,e2,t2]<=x[e1,t1] ,
-                                        name=f"z_{e1}_{t1}_{e2}_{t2}_lt_x_{e1}_{t1}")
-                        model.addConstr(z[e1,t1,e2,t2]<=x[e2,t2] ,
-                                        name=f"z_{e1}_{t1}_{e2}_{t2}_lt_x_{e2}_{t2}")
+        for e2 in E:
+            if n[e1, e2]>0:
+                for t1 in T:
+                    for t2 in T:
+                        model.addConstr(y[e1,t1,e2,t2]>=x[e1,t1] + x[e2,t2] - 1 ,
+                                        name=f"y_{e1}_{t1}_{e2}_{t2}_gt")
+                        model.addConstr(y[e1,t1,e2,t2]<=x[e1,t1] ,
+                                        name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e1}_{t1}")
+                        model.addConstr(y[e1,t1,e2,t2]<=x[e2,t2] ,
+                                        name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e2}_{t2}")
+                        # match equity_measure:
+                        #     case 0:
+                        #         #only adding constraints for conflicting exams possibly scheduled closer than 5 timeslots 
+                        #         #had to remove e2>e1 to have valid mapping when additional_restriction=1
+                        #         if e2>e1 and abs(t1-t2)<=5:
+                        #         #if abs(t1-t2)<=5:
+                        #             model.addConstr(y[e1,t1,e2,t2]>=x[e1,t1] + x[e2,t2] - 1 ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_gt")
+                        #             model.addConstr(y[e1,t1,e2,t2]<=x[e1,t1] ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e1}_{t1}")
+                        #             model.addConstr(y[e1,t1,e2,t2]<=x[e2,t2] ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e2}_{t2}")
+                        #     case 1:
+                        #         #timeslots constraint here is removed because we are interested in the distance between all pairs of conflicting exams, 
+                        #         #no matter when they are scheduled
+                        #         if e2>e1:
+                        #             model.addConstr(y[e1,t1,e2,t2]>=x[e1,t1] + x[e2,t2] - 1 ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_gt")
+                        #             model.addConstr(y[e1,t1,e2,t2]<=x[e1,t1] ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e1}_{t1}")
+                        #             model.addConstr(y[e1,t1,e2,t2]<=x[e2,t2] ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e2}_{t2}")
+                        #     case 2:
+                        #        #here we are interested only in conflicting exams scheduled in back to back timeslots
+                        #        if t2==t1+1:
+                        #             model.addConstr(y[e1,t1,e2,t2]>=x[e1,t1] + x[e2,t2] - 1 ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_gt")
+                        #             model.addConstr(y[e1,t1,e2,t2]<=x[e1,t1] ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e1}_{t1}")
+                        #             model.addConstr(y[e1,t1,e2,t2]<=x[e2,t2] ,
+                        #                             name=f"y_{e1}_{t1}_{e2}_{t2}_lt_x_{e2}_{t2}")
+    
+    if equity_measure==2:
+        for s in S:
+            for t in range(1, len(T)):
+                for e1 in stu[s]:
+                    for e2 in stu[s]:
+                        #exams in which the student is enrolled are conflicting by definition
+                        if e1!=e2:
+                        #if n[e1,e2]>0:
+                            model.addConstr(
+                                #if at least two conflicting exams scheduled back back for student s, then z[s] is forced to get value 1
+                                #otherwise it will be pushed to 0 by minimization function where possible
+                                z[s] >=  y[e1,t,e2,t+1]
+                                , name=f"back_to_back_{s}_{e1}_{e2}_{t}"
+                                )
+                    
+    match additional_restriction:
+        #case 1: at most 3 consecutive time slots with conflicting exams
+        #case 2: #if two conflicting exams in consecutive time slots, 
+                    #then no conflicting exams can be scheduled in the next 3 time slots (every 4 time slots, only two of them can have conflicting exams)
+        case 1|2:
+            k_dict = dict()
+            for t in range(1, len(T)):
+                k_dict[t] = 0
+            
+            #k[t] =1 if in time-slot t and t+1 we have scheduled at least a conflicting pair of exams 
+            k = model.addVars(k_dict, vtype=GRB.BINARY, name="k")
 
+            #for every t, look if there are conflicting exams scheduled in t and t+1
+            for t in range(1, len(T)):
 
+                #if we have zero conflicting exams in t, t+1, then k is forced to 0
+                model.addConstr(k[t] <= gp.quicksum(y[e1,t,e2,t+1] for e1 in E for e2 in E if n[e1,e2]>0)
+                                , name=f"{t}_{t+1}_conflicting_exams_gt")
+                
+                #if we have m conflicting exams in t,t+1, we force k[t] to go to 1 dividing by the total number of 
+                #conflicting exams
+                model.addConstr(k[t] >= gp.quicksum(y[e1,t,e2,t+1] for e1 in E for e2 in E if n[e1,e2]>0)/num_conflicting_exm
+                                , name=f"{t}_{t+1}_conflicting_exams_lt")
+                
+                
+                #give for granted that there are at least 4 timeslots, otherwise restriction 1 is always satisfied,
+                #and restriction 2 would need additional constraint (k[t] + k[t+1]<=1)
+                if t<len(T)-2:
+                    if additional_restriction==1:
+                        #can't have more than 3 consecutive time slots with conflicting exams (I check 4 time slots and force it to be less than 3)
+                        model.addConstr(k[t] + k[t+1] + k[t+2] <= 2)
+                    else:
+                        #only two consecutive time slots can have conflicting exams, then 3 timeslots without conflicting exams (between consecutive time slots)
+                        model.addConstr(k[t] + k[t+1] + k[t+2] <= 1)
 
+        #bonus introduced when 6 consecutive timeslots do not have conflicting exams (allows overlapping of slots)
+        case 3:
+                k_dict = dict()
+                for t1 in range(1, len(T)):
+                    for t2 in range(t1+1, len(T)+1):
+                        #6 timeslots
+                        if t2-t1<=5:
+                            #k[t1,t2]=1 if t1 and t2 have conflicting exams scheduled
+                            k_dict[t1, t2] = 0
+
+                k = model.addVars(k_dict, vtype=GRB.BINARY, name="k")
+
+                for t1 in range(1, len(T)):
+                    for t2 in range(t1+1, len(T)+1):
+                        if t2-t1 <= 5:
+                            #if we have zero conflicting exams in t1, t2, then k is forced to 0
+                            model.addConstr(k[t1,t2] <= gp.quicksum(y[e1,t1,e2,t2] for e1 in E for e2 in E if n[e1,e2]>0)
+                                            , name=f"{t}_{t+1}_conflicting_exams_gt")
+                            
+                            #if we have m conflicting exams in t1,t2, we force k[t1,t2] to go to 1 dividing by the total number of 
+                            #conflicting exams
+                            model.addConstr(k[t1,t2] >= gp.quicksum(y[e1,t1,e2,t2] for e1 in E for e2 in E if n[e1,e2]>0)/num_conflicting_exm
+                                            , name=f"{t}_{t+1}_conflicting_exams_lt")
+                    
+                    if t1<(len(T)-4):
+                        #if the sum is 0, bonus is 1
+                        model.addConstr(b[t1]>= 1 - (gp.quicksum(k[t3,t4] for t3 in range(t1,t1+5) for t4 in range(t3+1, t1+6))))
+                        
+                        # #if the sum is greater than 0, force the bonus to 0
+                        model.addConstr(b[t1]<= 1 - (gp.quicksum(k[t3,t4] for t3 in range(t1,t1+5) for t4 in range(t3+1, t1+6))/num_conflicting_exm))
+
+        
 ##############################################################################################
-#####################################   GUROBI PARS   ########################################
+#################################   SHOW FOUND SOLUTION   ####################################
 ##############################################################################################
-
-    #enable solution pool, model won't stop at first optimal solution
-    #model.setParam(GRB.Param.PoolSearchMode, 2)  
-    model.setParam(GRB.param.TimeLimit, 1800)
+ 
+    model.setParam(GRB.param.TimeLimit, 600)
     #model.setParam(GRB.param.Presolve, 2)
-    # model.setParam(GRB.Param.Method, 0)  # 0 = primal simplex
-    # model.setParam(GRB.Param.Cuts, 0)    # 0 = disable cuts
-    # model.setParam(GRB.Param.MIPFocus, 3)  # 3 = focus on finding feasible solutions
-    # model.setParam(GRB.Param.Heuristics, 0)  # 0 = disable heuristics
-
     #Optimize the model
     model.optimize()
 
@@ -196,9 +347,15 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
                 if x[e, t].x > 0.5:
                     print(f"Exam {e} is scheduled in time-slot {t}")
 
-        if check_feasibility(x, n):
-            #save solution found
-            model.write(f"solutions/{files_name}_base_restriction_{additional_restriction}.sol")
+        #implemented only for base constraints
+        if check_feasibility(x, n, T, additional_restriction):
+            
+            #save found solution
+            if equity_measure == 0:
+                model.write(f"solutions/equity_measure_{equity_measure}/{files_name}_additional_restriction_{additional_restriction}.sol")
+            else:
+                model.write(f"solutions/equity_measure_{equity_measure}/{files_name}.sol")
+
             if model.status == GRB.OPTIMAL:
                 print("Found optimal solution")
             
@@ -216,7 +373,7 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 
 
 
-def check_feasibility(solution, n : dict) -> bool:
+def check_feasibility(solution, n : dict, T : list, additional_restriction : int) -> bool:
     """Method used to check the feasibility of a solution
 
     Args:
@@ -226,7 +383,10 @@ def check_feasibility(solution, n : dict) -> bool:
         feasibile {bool} : True if the solution respects the constraints
     """
     dict_schedules = dict()
-    
+    dict_time_slot_schedule = dict()
+    for t in T:
+        dict_time_slot_schedule[t] = list()
+
     #1st constraint: all exams must be scheduled exactly once
     i = 1
     scheduled = 0
@@ -246,14 +406,24 @@ def check_feasibility(solution, n : dict) -> bool:
             scheduled += 1
             #build dictionary containing scheduling solution
             dict_schedules[e] = t
+            #build dictionary containing all exams scheduled in a certain time slot
+            dict_time_slot_schedule[t].append(e)
 
     #2nd constraint: can't have conflicting exam in same time slot
-    for e1 in dict_schedules.keys():
-        for e2 in dict_schedules.keys():
-            if n[e1, e2] > 0:
-                if dict_schedules[e1] == dict_schedules[e2]:
+    match additional_restriction:
+        case 1|2|3:
+            for e1 in dict_schedules.keys():
+                for e2 in dict_schedules.keys():
+                    if n[e1, e2] > 0:
+                        if dict_schedules[e1] == dict_schedules[e2]:
+                            return False
+        case 4:
+            for t in T:
+                #print (dict_time_slot_schedule[t])
+                count = np.sum(1 for e1 in dict_time_slot_schedule[t] for e2 in dict_time_slot_schedule[t] if n[e1,e2]>0 and e2>e1)
+                #print(f"timeslot {t} count {count}")
+                if count >3:
                     return False
-
     
             
     return True

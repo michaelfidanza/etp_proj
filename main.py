@@ -8,5 +8,5 @@ from gurobipy import GRB
 
 # for i in range(1, 12):
 #     files_name = "instance" + ("0" + str(i) if i<10 else str(i))
-solve_instance("instance06")
+solve_instance("test", equity_measure=0, additional_restriction=4)
 
