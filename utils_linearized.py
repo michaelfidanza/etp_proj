@@ -352,7 +352,7 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 #################################   SHOW FOUND SOLUTION   ####################################
 ##############################################################################################
  
-    model.setParam(GRB.param.TimeLimit, 600)
+    model.setParam(GRB.param.TimeLimit, 1800)
     # model.setParam('Presolve', 2)
     #model.setParam('MIPFocus', 3)
 
@@ -360,13 +360,18 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
     model.optimize()
 
 
+    solution_file_name = f"github_solutions/{files_name}_equity_measure_{equity_measure}_additional_restriction_{additional_restriction}"
 
     #Display results
     if model.SolCount > 0:
+        with open(solution_file_name, 'a') as solution_file:
+            solution_file.write(f"{model.getObjective().getValue()}\n")
         for e, t in x.keys():
                 if x[e, t].x > 0.5:
                     print(f"Exam {e} is scheduled in time-slot {t}")
-
+                    with open(solution_file_name, 'a') as solution_file:
+                        solution_file.write(f"{e} {t}\n")
+        
         #implemented only for base constraints
         if check_feasibility(x, n, T, additional_restriction):
             
@@ -378,11 +383,16 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 
             if model.status == GRB.OPTIMAL:
                 print("Found optimal solution")
-            
+                with open(solution_file_name, 'a') as solution_file:
+                    solution_file.write(f"Found optimal solution")
         else:
             print("Solution not feasible")
+            with open(solution_file_name, 'a') as solution_file:
+                solution_file.write(f"Solution not feasible")
     else:
         print("No solution found.")
+        with open(solution_file_name, 'a') as solution_file:
+            solution_file.write(f"No solution found")
 
     model.dispose()
 
