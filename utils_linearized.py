@@ -77,6 +77,7 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
                                         1: equity measure based on average distance between conflicting exams
                                         2: equity measure based on number of students having back to back conflicting exams
                                         3: equity measure based on minimum distance between any 2 conflicting exams
+                                        4: equity measure based on average distance between conflicting exams using MAD as penalty
         additional_restriction (int): integer variable containing the type of restriction to apply
                                         0: base solution
                                         1: at most 3 consecutive time slots with conflicting exams
@@ -297,67 +298,45 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
             k_dict = dict()
             for t1 in range(1, len(T)):
                 for t2 in range(t1+1, len(T)+1):
-                    #consider timeslots also in different order (k[1,2] = k[2,1])
-                    if t1!=t2:
-                        #k[t1,t2]=1 if t1 and t2 have conflicting exams scheduled
-                        k_dict[t1, t2] = 0
+                    #k[t1,t2]=1 if t1 and t2 have conflicting exams scheduled
+                    k_dict[t1, t2] = 0
         
             k = model.addVars(k_dict, vtype=GRB.BINARY, name="k")
         
             for t1 in range(1, len(T)):
                 for t2 in range(t1+1, len(T)+1):
-                    if t1!=t2:
+                    #if we have zero conflicting exams in t1, t2, then k is forced to 0
+                    model.addConstr(k[t1,t2] <= gp.quicksum(y[e1,t1,e2,t2] for e1 in E for e2 in E if n[e1,e2]>0)
+                                    , name=f"{t}_{t+1}_conflicting_exams_gt")
+                    
+                    #if we have m conflicting exams in t1,t2, we force k[t1,t2] to go to 1 dividing by the total number of 
+                    #conflicting exams
+                    model.addConstr(k[t1,t2] >= gp.quicksum(y[e1,t1,e2,t2] for e1 in E for e2 in E if n[e1,e2]>0)/num_conflicting_exm
+                                    , name=f"{t}_{t+1}_conflicting_exams_lt")
 
-                        #if we have zero conflicting exams in t1, t2, then k is forced to 0
-                        model.addConstr(k[t1,t2] <= gp.quicksum(y[e1,t1,e2,t2] for e1 in E for e2 in E if n[e1,e2]>0)
-                                        , name=f"{t}_{t+1}_conflicting_exams_gt")
-                        
-                        #if we have m conflicting exams in t1,t2, we force k[t1,t2] to go to 1 dividing by the total number of 
-                        #conflicting exams
-                        model.addConstr(k[t1,t2] >= gp.quicksum(y[e1,t1,e2,t2] for e1 in E for e2 in E if n[e1,e2]>0)/num_conflicting_exm
-                                        , name=f"{t}_{t+1}_conflicting_exams_lt")
-    
         
             
                 
             if additional_restriction==1:
-                for t in range(1, len(T)-3):
+                for t in range(1, len(T)-2):
                     #can't have more than 3 consecutive time slots with conflicting exams
                     # if t=1 and have conflicts in 1 and 2, 2 and 3, then I will force time slot 4 to not have conflicts with neither timeslot 3 nor 5
                     model.addConstr(k[t+2, t+3] <= 2 - (k[t,t+1] + k[t+1, t+2]))
-                    model.addConstr(k[t+3, t+4] <= 2 - (k[t,t+1] + k[t+1, t+2]))
-                #add manually last constraint in case I don't have enough timeslots available after my 3 consecutive time slots
-                if len(T)>3:
-                    t = len(T)-3
-                    model.addConstr(k[t+2, t+3] <= 2 - (k[t,t+1] + k[t+1, t+2]))
-                
+                    if t <= len(T)-4:
+                        model.addConstr(k[t+3, t+4] <= 2 - (k[t,t+1] + k[t+1, t+2]))
             
             elif additional_restriction==2:
-                for t in range(1, len(T)-4):
+                for t in range(1, len(T)-1):
                     #only two consecutive time slots can have conflicting exams, then 3 timeslots without conflicting exams (between consecutive time slots)
                     #if t=1 and have conflicts in 1 and 2, then I will have no consecutive conflicts in 2 and 3, 3 and 4, 4 and 5, 5 and 6 
                     #to ensure that 3-4-5 are without conflicts
                     model.addConstr(k[t+1, t+2] <= 1 - k[t, t+1])
-                    model.addConstr(k[t+2, t+3] <= 1 - k[t, t+1])
-                    model.addConstr(k[t+3, t+4] <= 1 - k[t, t+1])
-                    model.addConstr(k[t+4, t+5] <= 1 - k[t, t+1])
-                
-                #add manually last constraints in case I don't have enough timeslots available after my 2 consecutive time slots
-                if len(T)>4:
-                    t = len(T)-4
-                    model.addConstr(k[t+1, t+2] <= 1 - k[t, t+1])
-                    model.addConstr(k[t+2, t+3] <= 1 - k[t, t+1])
-                    model.addConstr(k[t+3, t+4] <= 1 - k[t, t+1])
-
-                if len(T)>3:
-                    t = len(T)-3
-                    model.addConstr(k[t+1, t+2] <= 1 - k[t, t+1])
-                    model.addConstr(k[t+2, t+3] <= 1 - k[t, t+1])
-
-                if len(T)>2:
-                    t = len(T)-2
-                    model.addConstr(k[t+1, t+2] <= 1 - k[t, t+1])
-            
+                    if t <= len(T)-3:
+                        model.addConstr(k[t+2, t+3] <= 1 - k[t, t+1])
+                    if t <= len(T)-4:
+                        model.addConstr(k[t+3, t+4] <= 1 - k[t, t+1])
+                    if t <= len(T)-5:
+                        model.addConstr(k[t+4, t+5] <= 1 - k[t, t+1])
             
             elif additional_restriction==3:
                 for t in range(1, len(T)-4):                    
@@ -373,8 +352,10 @@ def solve_instance(files_name : str, equity_measure : int = 0, additional_restri
 #################################   SHOW FOUND SOLUTION   ####################################
 ##############################################################################################
  
-    model.setParam(GRB.param.TimeLimit, 60)
-    #model.setParam(GRB.param.Presolve, 2)
+    model.setParam(GRB.param.TimeLimit, 600)
+    # model.setParam('Presolve', 2)
+    #model.setParam('MIPFocus', 3)
+
     #Optimize the model
     model.optimize()
 
@@ -468,3 +449,121 @@ def check_feasibility(solution, n : dict, T : list, additional_restriction : int
     return True
 
 
+
+
+
+
+def solve_instance_diff_formulation(files_name : str):
+    """Method used to solve the instance of an ETP problem contained in 3 files with name {files_name}
+
+    Args:
+        files_name (str): name of the files containing the instance to solve
+    """
+
+##############################################################################################
+####################################   INITIALIZATION   ######################################
+##############################################################################################
+
+    ##populate vars from files
+    slo, exm, stu, n = read_instances(files_name)
+    
+    T = list(range(1, slo+1))
+    E = list(exm.keys())
+    S = list(stu.keys())
+
+    #prepare variables for gurobi
+    x_dict = dict()
+    y_dict = dict()
+
+    #initialize variable x[e,t]
+    for e in E:
+        for t in T:
+            x_dict[e, t] = 0
+    
+    #linearization: new binary decision var y[e1,e2,t1, t2] = 1 if x[e1, t1]=1 and x[e2,t2]=1
+    for e1 in E:
+        for e2 in E:
+            if n[e1,e2]>0:
+                for i in range (1, 6):
+                        if i < len(T):
+                            for t in range(1, len(T)-i+1):
+                                y_dict[e1, e2, i] = 0
+
+
+
+    # Create Gurobi model
+    model = gp.Model("Exam_Timetabling")
+
+    # Create gurobi binary decision variable x[e, t]
+    x = model.addVars(x_dict, vtype=GRB.BINARY, name="x")
+
+    #linearization
+    y = model.addVars(y_dict, vtype=GRB.BINARY, name="y")
+
+
+##############################################################################################
+####################################    OBJ FUNCTION   #######################################
+##############################################################################################
+
+    model.setObjective(
+        gp.quicksum((2**(5 - i) )* n[e1, e2] *  y[e1,e2,i] / len(S) 
+                    for e1 in E for e2 in E for i in range(1, 6) if n[e1,e2]>0),
+        GRB.MINIMIZE
+    )
+
+##############################################################################################
+#####################################   CONSTRAINTS   ########################################
+##############################################################################################
+
+    #each exam can be scheduled only once in examination period
+    for e in E:
+        model.addConstr(gp.quicksum(x[e, t] for t in T) == 1, name=f"{e}_scheduled_once")
+
+    for e1 in E:
+        for e2 in range(e1+1, len(E)+1):
+            if n[e1, e2] > 0:
+                for t in T:
+                    model.addConstr(x[e1,t] + x[e2,t] <= 1)
+       
+    #link y to x (linearize x[e1,t1] * x[e2,t2])
+    for e1 in E:
+        for e2 in E:
+            if n[e1,e2]>0:
+                for i in range (1, 6):
+                        if i < len(T):
+                            for t in range(1, len(T)-i+1):
+                                model.addConstr(y[e1,e2,i] >= x[e1, t] + x[e2, t+i] -1 )
+    
+ 
+##############################################################################################
+#################################   SHOW FOUND SOLUTION   ####################################
+##############################################################################################
+ 
+    model.setParam(GRB.param.TimeLimit, 1200)
+    #model.setParam('Presolve', 2)
+    #model.setParam('MIPFocus', 3)
+
+    #Optimize the model
+    model.optimize()
+
+    #Display results
+    if model.SolCount > 0:
+        for e, t in x.keys():
+                if x[e, t].x > 0.5:
+                    print(f"Exam {e} is scheduled in time-slot {t}")
+
+        #implemented only for base constraints
+        if check_feasibility(x, n, T, 0):
+
+            #save found solution
+            model.write(f"solutions/new_formulation/{files_name}.sol")
+           
+            if model.status == GRB.OPTIMAL:
+                print("Found optimal solution")
+            
+        else:
+            print("Solution not feasible")
+    else:
+        print("No solution found.")
+
+    model.dispose()

@@ -1,12 +1,10 @@
-#from utils import solve_base_solution, solve_first_type_equity_solution, solve_second_type_equity_solution
-from utils_linearized import solve_instance
-
-import gurobipy as gp
-from gurobipy import GRB
+from utils_linearized import solve_instance, solve_instance_diff_formulation
 
 
 
-# for i in range(8, 12):
-#     files_name = "instance" + ("0" + str(i) if i<10 else str(i))
-solve_instance("test", equity_measure=4, additional_restriction=0)
+
+for i in range(1, 10):
+    files_name = "instance" + ("0" + str(i) if i<10 else str(i))
+    if i!= 6:
+        solve_instance(files_name, equity_measure=0, additional_restriction=0)
 
